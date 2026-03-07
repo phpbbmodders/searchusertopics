@@ -3,6 +3,7 @@ services:
         class: rmcgirr83\searchusertopics\event\listener
         arguments:
             - '@auth'
+            - '@cache'
             - '@config'
             - '@dbal.conn'
             - '@language'

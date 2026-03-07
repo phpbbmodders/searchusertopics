@@ -14,6 +14,7 @@ namespace rmcgirr83\searchusertopics\event;
 * @ignore
 */
 use phpbb\auth\auth;
+use phpbb\cache\service as cache;
 use phpbb\config\config;
 use phpbb\db\driver\driver_interface;
 use phpbb\language\language;
@@ -29,6 +30,9 @@ class listener implements EventSubscriberInterface
 {
 	/** @var auth */
 	protected $auth;
+
+	/** @var cache */
+	protected $cache;
 
 	/** @var config */
 	protected $config;
@@ -53,6 +57,7 @@ class listener implements EventSubscriberInterface
 
 	public function __construct(
 		auth $auth,
+		cache $cache,
 		config $config,
 		driver_interface $db,
 		language $language,
@@ -62,6 +67,7 @@ class listener implements EventSubscriberInterface
 		$php_ext)
 	{
 		$this->auth = $auth;
+		$this->cache = $cache;
 		$this->config = $config;
 		$this->db = $db;
 		$this->language = $language;
@@ -82,8 +88,13 @@ class listener implements EventSubscriberInterface
 	{
 		return array(
 			'core.acp_extensions_run_action_after'	=>	'acp_extensions_run_action_after',
-			'core.memberlist_view_profile'				=> 'memberlist_view_profile',
+			'core.memberlist_view_profile'			=> 'memberlist_view_profile',
 			'core.page_header_after'	=> 'page_header_after',
+			'core.submit_post_end'		=> 'submit_post_end',
+			'core.delete_post_after'	=> 'delete_post_after',
+			'core.viewtopic_cache_user_data'			=> 'viewtopic_cache_user_data',
+			'core.viewtopic_cache_guest_data'			=> 'viewtopic_cache_guest_data',
+			'core.viewtopic_modify_post_row'			=> 'viewtopic_modify_post_row',
 		);
 	}
 
@@ -94,13 +105,18 @@ class listener implements EventSubscriberInterface
 	* @return null
 	* @access public
 	*/
-	public function page_header_after($event)
+	public function page_header_after($event): void
 	{
 		$this->language->add_lang('common', 'rmcgirr83/searchusertopics');
 		$user_id = $this->user->data['user_id'];
 		$this->template->assign_vars(array(
 			'U_SEARCH_TOPICS'	=> ($this->auth->acl_get('u_search')) ? append_sid("{$this->root_path}search.$this->php_ext", "author_id=$user_id&amp;sr=topics&amp;sf=firstpost") : '',
 		));
+
+		if ($this->cache->get('_searchusertopics') == false)
+		{
+			$this->build_cache();
+		}
 	}
 
 	/* Display additional metdate in extension details
@@ -109,7 +125,7 @@ class listener implements EventSubscriberInterface
 	* @param return null
 	* @access public
 	*/
-	public function acp_extensions_run_action_after($event)
+	public function acp_extensions_run_action_after($event): void
 	{
 		if ($event['ext_name'] == 'rmcgirr83/searchusertopics' && $event['action'] == 'details')
 		{
@@ -125,7 +141,7 @@ class listener implements EventSubscriberInterface
 	* @return null
 	* @access public
 	*/
-	public function memberlist_view_profile($event)
+	public function memberlist_view_profile($event): void
 	{
 		$user_id = $event['member']['user_id'];
 		$reg_date = $event['member']['user_regdate'];
@@ -171,5 +187,108 @@ class listener implements EventSubscriberInterface
 				'U_SEARCH_USER_TOPICS'	=> ($this->auth->acl_get('u_search')) ? append_sid("{$this->root_path}search.$this->php_ext", "author_id=$user_id&amp;sr=topics&amp;sf=firstpost") : '',
 			));
 		}
+	}
+
+	/**
+	* Build a cache of user topic counts for displaying through out forum
+	* This is only run when mode equals post
+	* @param object $event The event object
+	* @return null
+	* @access public
+	*/
+	public function submit_post_end($event): void
+	{
+		$mode = $event['mode'];
+
+		if ($mode == 'post')
+		{
+			$this->build_cache();
+		}
+	}
+
+	/**
+	* Rebuild the cache if topics/posts are deleted
+	*
+	* @param object $event The event object
+	* @return null
+	* @access public
+	*/
+	public function delete_post_after($event): void
+	{
+		$this->build_cache();
+	}
+
+	/**
+	 * Update viewtopic user data
+	 *
+	 * @param object $event The event object
+	 * @return null
+	 * @access public
+	 */
+	public function viewtopic_cache_user_data($event)
+	{
+		$user_topic_counts = $this->cache->get('_searchusertopics');
+
+		$user_id = $event['poster_id'];
+		$array = $event['user_cache_data'];
+		$array['user_topics_count'] = !empty($user_topic_counts[$user_id]) ? $user_topic_counts[$user_id] : '';
+
+		$event['user_cache_data'] = $array;
+	}
+
+	/**
+	 * Update viewtopic guest data
+	 *
+	 * @param object $event The event object
+	 * @return null
+	 * @access public
+	 */
+	public function viewtopic_cache_guest_data($event)
+	{
+		$array = $event['user_cache_data'];
+		$array['user_topics_count'] = 0;
+		$event['user_cache_data'] = $array;
+	}
+
+	/**
+	 * Modify the viewtopic post row
+	 *
+	 * @param object $event The event object
+	 * @return null
+	 * @access public
+	 */
+	public function viewtopic_modify_post_row($event)
+	{
+		$user_id = $event['poster_id'];
+
+		$event['post_row'] = array_merge($event['post_row'], [
+			'TOPICS_COUNT' => !empty($event['user_poster_data']['user_topics_count']) ? $event['user_poster_data']['user_topics_count'] : '',
+			'U_SEARCH_USER_TOPICS'	=> ($this->auth->acl_get('u_search')) ? append_sid("{$this->root_path}search.$this->php_ext", "author_id=$user_id&amp;sr=topics&amp;sf=firstpost") : '',
+		]);
+	}
+
+	/* this function is to build the cache of a count of topics started by users_days
+	 * it is only used if the cache doesn't exist due to a purge, or if a new topic is posted
+	 *
+	 * @return null
+	 * @access private
+	 */
+	private function build_cache(): void
+	{
+		$user_topic_count = [];
+
+		$sql = 'SELECT topic_poster, COUNT(topic_id) AS numberoftopics
+			FROM ' . TOPICS_TABLE . '
+			WHERE topic_visibility = ' . ITEM_APPROVED . '
+			GROUP BY topic_poster';
+		$result = $this->db->sql_query($sql);
+
+		while ($row = $this->db->sql_fetchrow($result))
+		{
+			$user_topic_count[$row['topic_poster']] = $row['numberoftopics'];
+		}
+		$this->db->sql_freeresult($result);
+
+		$this->cache->put('_searchusertopics', $user_topic_count);
 	}
 }
