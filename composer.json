@@ -19,9 +19,8 @@
         }
     ],
     "require": {
-        "php": ">=7.4",
-        "phpbb/phpbb": ">=3.3",
-        "composer/installers": "~1.0.0"
+        "php": ">=8.3.36",
+        "composer/installers": "^1.0 || ^2.0"
     },
     "require-dev": {
         "phpbb/epv": "dev-master"
@@ -29,7 +28,7 @@
     "extra": {
         "display-name": "Search user topics",
         "soft-require": {
-            "phpbb/phpbb": ">=3.3"
+            "phpbb/phpbb": ">=3.3.19"
         },
         "version-check": {
             "host": "www.phpbb.com",
